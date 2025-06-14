@@ -29,7 +29,7 @@ function App() {
     const checkBackendPort = async () => {
       for (let port = 5001; port < 5010; port++) {
         try {
-          await axios.get(`http://localhost:${port}/api/health`);
+          await axios.get(`https://video-downloader-backend-ttbf.onrender.com:${port}/api/health`);
           setBackendPort(port);
           break;
         } catch (err) {
@@ -47,7 +47,7 @@ function App() {
     setVideoInfo(null);
 
     try {
-      const response = await axios.post(`http://localhost:${backendPort}/api/download`, { url });
+      const response = await axios.post(`https://video-downloader-backend-ttbf.onrender.com:${backendPort}/api/download`, { url });
       setVideoInfo(response.data);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to process video');
