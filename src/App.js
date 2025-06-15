@@ -21,12 +21,14 @@ import {
 import { Download as DownloadIcon, Brightness4, Brightness7 } from '@mui/icons-material';
 import axios from 'axios';
 
+// Get backend URL from environment variable with fallback
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL ;
+
 function App() {
   const [url, setUrl] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [videoInfo, setVideoInfo] = useState(null);
-  const [backendPort, setBackendPort] = useState(5001);
   const [darkMode, setDarkMode] = useState(() => {
     const savedMode = localStorage.getItem('darkMode');
     return savedMode ? JSON.parse(savedMode) : false;
@@ -35,6 +37,8 @@ function App() {
   const [downloadStatus, setDownloadStatus] = useState('');
   const [downloadSpeed, setDownloadSpeed] = useState(0);
   const [eventSource, setEventSource] = useState(null);
+  const [slowDownloadReason, setSlowDownloadReason] = useState('');
+  const [downloadStartTime, setDownloadStartTime] = useState(null);
 
   useEffect(() => {
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
@@ -45,22 +49,6 @@ function App() {
       mode: darkMode ? 'dark' : 'light',
     },
   });
-
-  useEffect(() => {
-    // Try to detect backend port
-    const checkBackendPort = async () => {
-      for (let port = 5001; port < 5010; port++) {
-        try {
-          await axios.get(`http://localhost:${port}/api/health`);
-          setBackendPort(port);
-          break;
-        } catch (err) {
-          continue;
-        }
-      }
-    };
-    checkBackendPort();
-  }, []);
 
   // Clean up event source on component unmount
   useEffect(() => {
@@ -77,7 +65,10 @@ function App() {
       eventSource.close();
     }
 
-    const es = new EventSource(`http://localhost:${backendPort}/api/progress_stream/${downloadId}`);
+    setDownloadStartTime(Date.now());
+    setSlowDownloadReason('');
+
+    const es = new EventSource(`${BACKEND_URL}/api/progress_stream/${downloadId}`);
     
     es.onmessage = (event) => {
       try {
@@ -85,12 +76,28 @@ function App() {
         setDownloadStatus(progress.status || '');
         setDownloadSpeed(progress.speed || 0);
         
+        // Check for slow download
+        if (progress.status === 'downloading') {
+          const currentTime = Date.now();
+          const elapsedTime = (currentTime - downloadStartTime) / 1000; // in seconds
+          
+          if (elapsedTime > 30 && progress.speed < 1024 * 1024) { // 30 seconds and less than 1MB/s
+            if (progress.speed < 1024 * 50) { // Less than 50KB/s
+              setSlowDownloadReason('Very slow internet connection detected. This might take a while.');
+            } else if (progress.speed < 1024 * 200) { // Less than 200KB/s
+              setSlowDownloadReason('Slow internet connection detected. Please be patient.');
+            }
+          }
+        }
+        
         if (progress.status === 'completed' || progress.status === 'finished') {
           es.close();
           setEventSource(null);
+          setSlowDownloadReason('');
         } else if (progress.status === 'error') {
           es.close();
           setEventSource(null);
+          setSlowDownloadReason('');
         }
       } catch (error) {}
     };
@@ -98,6 +105,7 @@ function App() {
     es.onerror = () => {
       es.close();
       setEventSource(null);
+      setSlowDownloadReason('');
     };
 
     setEventSource(es);
@@ -117,7 +125,7 @@ function App() {
     setVideoInfo(null);
 
     try {
-      const response = await axios.post(`http://localhost:${backendPort}/api/download`, { url });
+      const response = await axios.post(`${BACKEND_URL}/api/download`, { url });
       setVideoInfo(response.data);
     } catch (err) {
       setError(err.response?.data?.error || 'Failed to process video');
@@ -140,7 +148,7 @@ function App() {
       const downloadId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
       startProgressStream(downloadId);
       const response = await axios.get(
-        `http://localhost:${backendPort}/api/merge_download`,
+        `${BACKEND_URL}/api/merge_download`,
         {
           params: { 
             url, 
@@ -271,9 +279,24 @@ function App() {
                               })()}
                             </Typography>
                             {downloadStatus === 'downloading' && downloadSpeed > 0 && (
-                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                                Download speed: {formatSpeed(downloadSpeed)}
-                              </Typography>
+                              <>
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                  Download speed: {formatSpeed(downloadSpeed)}
+                                </Typography>
+                                {slowDownloadReason && (
+                                  <Typography 
+                                    variant="caption" 
+                                    color="warning.main" 
+                                    sx={{ 
+                                      display: 'block',
+                                      mt: 1,
+                                      fontStyle: 'italic'
+                                    }}
+                                  >
+                                    {slowDownloadReason}
+                                  </Typography>
+                                )}
+                              </>
                             )}
                           </Box>
                         )}
