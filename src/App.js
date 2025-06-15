@@ -32,6 +32,7 @@ function App() {
     const savedMode = localStorage.getItem('darkMode');
     return savedMode ? JSON.parse(savedMode) : false;
   });
+  const [downloadingIndex, setDownloadingIndex] = useState(null);
 
   useEffect(() => {
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
@@ -48,7 +49,8 @@ function App() {
     const checkBackendPort = async () => {
       for (let port = 5001; port < 5010; port++) {
         try {
-          await axios.get(`https://video-downloader-backend-ttbf.onrender.com:${port}/api/health`);
+          // await axios.get(`https://video-downloader-backend-ttbf.onrender.com:${port}/api/health`);
+          await axios.get(`http://localhost:${port}/api/health`);
           setBackendPort(port);
           break;
         } catch (err) {
@@ -66,22 +68,40 @@ function App() {
     setVideoInfo(null);
 
     try {
-      const response = await axios.post(`https://video-downloader-backend-ttbf.onrender.com:${backendPort}/api/download`, { url });
+      // const response = await axios.post(`https://video-downloader-backend-ttbf.onrender.com:${backendPort}/api/download`, { url });
+      const response = await axios.post(`http://localhost:${backendPort}/api/download`, { url });
+      console.log('Received video info from backend:', response.data);
       setVideoInfo(response.data);
     } catch (err) {
+      console.error('Error fetching video info:', err);
       setError(err.response?.data?.error || 'Failed to process video');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleDownload = (url, title) => {
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${title}.mp4`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  const handleMergeDownload = async (format, index) => {
+    setDownloadingIndex(index);
+    try {
+      const response = await axios.post(
+        `http://localhost:${backendPort}/api/merge_download`,
+        { url, format_id: format.format_id },
+        { responseType: 'blob' }
+      );
+      const blob = new Blob([response.data], { type: 'video/mp4' });
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = `${videoInfo.title}_${format.quality || format.resolution}.mp4`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (err) {
+      alert('Failed to download video.');
+    } finally {
+      setDownloadingIndex(null);
+    }
   };
 
   return (
@@ -134,19 +154,35 @@ function App() {
                 <Typography variant="h6" gutterBottom>
                   {videoInfo.title}
                 </Typography>
+                {console.log('Rendering formats:', videoInfo.formats)}
                 <List>
-                  {videoInfo.formats.map((format, index) => (
+                  {/* {videoInfo.formats.map((format, index) => ( */}
+                    {/* Filter formats: only one per quality, and only those with filesize */}
+                    {(() => {
+                    const seen = new Set();
+                    return videoInfo.formats.filter(f => f.filesize && f.filesize > 0 && !seen.has(f.quality) && seen.add(f.quality));
+                  })().map((format, index) => (
                     <ListItem key={index}>
                       <ListItemText
-                        primary={`Quality: ${format.quality || 'Unknown'}`}
-                        secondary={`Type: ${format.mimeType}`}
+                        primary={`${format.quality} (${format.resolution})`}
+                        secondary={
+                          <>
+                            <Typography component="span" variant="body2" color="text.primary">
+                              {format.mimeType.toUpperCase()}
+                            </Typography>
+                            {format.hasAudio ? " • With Audio" : " • Video Only"}
+                            {format.filesize ? ` • ${(format.filesize / (1024 * 1024)).toFixed(2)} MB` : ""}
+                          </>
+                        }
                       />
                       <ListItemSecondaryAction>
                         <IconButton
                           edge="end"
-                          onClick={() => handleDownload(format.url, videoInfo.title)}
+                          onClick={() => handleMergeDownload(format, index)}
+                          title="Download"
+                          disabled={downloadingIndex === index}
                         >
-                          <DownloadIcon />
+                          {downloadingIndex === index ? <CircularProgress size={24} /> : <DownloadIcon />}
                         </IconButton>
                       </ListItemSecondaryAction>
                     </ListItem>
