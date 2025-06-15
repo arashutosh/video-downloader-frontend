@@ -13,7 +13,6 @@ import {
   ListItemText,
   ListItemSecondaryAction,
   IconButton,
-  useTheme,
   ThemeProvider,
   createTheme,
   AppBar,
@@ -33,6 +32,9 @@ function App() {
     return savedMode ? JSON.parse(savedMode) : false;
   });
   const [downloadingIndex, setDownloadingIndex] = useState(null);
+  const [downloadStatus, setDownloadStatus] = useState('');
+  const [downloadSpeed, setDownloadSpeed] = useState(0);
+  const [eventSource, setEventSource] = useState(null);
 
   useEffect(() => {
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
@@ -49,7 +51,6 @@ function App() {
     const checkBackendPort = async () => {
       for (let port = 5001; port < 5010; port++) {
         try {
-          // await axios.get(`https://video-downloader-backend-ttbf.onrender.com:${port}/api/health`);
           await axios.get(`http://localhost:${port}/api/health`);
           setBackendPort(port);
           break;
@@ -61,6 +62,54 @@ function App() {
     checkBackendPort();
   }, []);
 
+  // Clean up event source on component unmount
+  useEffect(() => {
+    return () => {
+      if (eventSource) {
+        eventSource.close();
+      }
+    };
+  }, [eventSource]);
+
+  const startProgressStream = (downloadId) => {
+    // Close existing event source
+    if (eventSource) {
+      eventSource.close();
+    }
+
+    const es = new EventSource(`http://localhost:${backendPort}/api/progress_stream/${downloadId}`);
+    
+    es.onmessage = (event) => {
+      try {
+        const progress = JSON.parse(event.data);
+        setDownloadStatus(progress.status || '');
+        setDownloadSpeed(progress.speed || 0);
+        
+        if (progress.status === 'completed' || progress.status === 'finished') {
+          es.close();
+          setEventSource(null);
+        } else if (progress.status === 'error') {
+          es.close();
+          setEventSource(null);
+        }
+      } catch (error) {}
+    };
+
+    es.onerror = () => {
+      es.close();
+      setEventSource(null);
+    };
+
+    setEventSource(es);
+  };
+
+  const formatSpeed = (speed) => {
+    if (!speed) return '';
+    if (speed < 1024) return `${speed.toFixed(0)} B/s`;
+    if (speed < 1024 * 1024) return `${(speed / 1024).toFixed(1)} KB/s`;
+    return `${(speed / (1024 * 1024)).toFixed(1)} MB/s`;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -68,12 +117,9 @@ function App() {
     setVideoInfo(null);
 
     try {
-      // const response = await axios.post(`https://video-downloader-backend-ttbf.onrender.com:${backendPort}/api/download`, { url });
       const response = await axios.post(`http://localhost:${backendPort}/api/download`, { url });
-      console.log('Received video info from backend:', response.data);
       setVideoInfo(response.data);
     } catch (err) {
-      console.error('Error fetching video info:', err);
       setError(err.response?.data?.error || 'Failed to process video');
     } finally {
       setLoading(false);
@@ -82,12 +128,33 @@ function App() {
 
   const handleMergeDownload = async (format, index) => {
     setDownloadingIndex(index);
+    setDownloadStatus('starting');
+    setDownloadSpeed(0);
+    
+    if (eventSource) {
+      eventSource.close();
+      setEventSource(null);
+    }
+
     try {
-      const response = await axios.post(
+      const downloadId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
+      startProgressStream(downloadId);
+      const response = await axios.get(
         `http://localhost:${backendPort}/api/merge_download`,
-        { url, format_id: format.format_id },
-        { responseType: 'blob' }
+        {
+          params: { 
+            url, 
+            format_id: format.format_id,
+            download_id: downloadId
+          },
+          responseType: 'blob',
+          timeout: 3600000,
+        }
       );
+      if (eventSource) {
+        eventSource.close();
+        setEventSource(null);
+      }
       const blob = new Blob([response.data], { type: 'video/mp4' });
       const downloadUrl = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
@@ -97,10 +164,20 @@ function App() {
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(downloadUrl);
+      setDownloadStatus('completed');
     } catch (err) {
-      alert('Failed to download video.');
+      alert('Failed to download video: ' + (err.response?.data?.detail || err.message));
+      if (eventSource) {
+        eventSource.close();
+        setEventSource(null);
+      }
+      setDownloadStatus('error');
     } finally {
-      setDownloadingIndex(null);
+      setTimeout(() => {
+        setDownloadingIndex(null);
+        setDownloadStatus('');
+        setDownloadSpeed(0);
+      }, 3000);
     }
   };
 
@@ -154,27 +231,53 @@ function App() {
                 <Typography variant="h6" gutterBottom>
                   {videoInfo.title}
                 </Typography>
-                {console.log('Rendering formats:', videoInfo.formats)}
                 <List>
-                  {/* {videoInfo.formats.map((format, index) => ( */}
-                    {/* Filter formats: only one per quality, and only those with filesize */}
-                    {(() => {
+                  {(() => {
                     const seen = new Set();
                     return videoInfo.formats.filter(f => f.filesize && f.filesize > 0 && !seen.has(f.quality) && seen.add(f.quality));
                   })().map((format, index) => (
-                    <ListItem key={index}>
-                      <ListItemText
-                        primary={`${format.quality} (${format.resolution})`}
-                        secondary={
-                          <>
-                            <Typography component="span" variant="body2" color="text.primary">
-                              {format.mimeType.toUpperCase()}
+                    <ListItem key={index} sx={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+                      <Box sx={{ width: '100%' }}>
+                        <ListItemText
+                          primary={`${format.quality} (${format.resolution})`}
+                          secondary={
+                            <>
+                              <Typography component="span" variant="body2" color="text.primary">
+                                {format.mimeType.toUpperCase()}
+                              </Typography>
+                              {format.hasAudio ? " • With Audio" : " • Video Only"}
+                              {format.filesize ? ` • ${(format.filesize / (1024 * 1024)).toFixed(2)} MB` : ""}
+                            </>
+                          }
+                        />
+                        {downloadingIndex === index && (
+                          <Box sx={{ width: '100%', mt: 2 }}>
+                            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                              {(() => {
+                                switch(downloadStatus) {
+                                  case 'merging':
+                                    return 'Merging audio and video streams...';
+                                  case 'downloading':
+                                    return 'Downloading video...';
+                                  case 'starting':
+                                    return 'Preparing download...';
+                                  case 'completed':
+                                    return 'Download completed!';
+                                  case 'error':
+                                    return 'An error occurred during download';
+                                  default:
+                                    return 'Please wait...';
+                                }
+                              })()}
                             </Typography>
-                            {format.hasAudio ? " • With Audio" : " • Video Only"}
-                            {format.filesize ? ` • ${(format.filesize / (1024 * 1024)).toFixed(2)} MB` : ""}
-                          </>
-                        }
-                      />
+                            {downloadStatus === 'downloading' && downloadSpeed > 0 && (
+                              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                Download speed: {formatSpeed(downloadSpeed)}
+                              </Typography>
+                            )}
+                          </Box>
+                        )}
+                      </Box>
                       <ListItemSecondaryAction>
                         <IconButton
                           edge="end"
@@ -197,4 +300,4 @@ function App() {
   );
 }
 
-export default App; 
+export default App;
