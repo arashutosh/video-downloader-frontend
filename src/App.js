@@ -22,7 +22,7 @@ import { Download as DownloadIcon, Brightness4, Brightness7 } from '@mui/icons-m
 import axios from 'axios';
 
 // Get backend URL from environment variable with fallback
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL ;
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://13.201.22.207:5001';
 
 function App() {
   const [url, setUrl] = useState('');
