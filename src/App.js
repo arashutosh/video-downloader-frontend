@@ -268,7 +268,7 @@ function App() {
                                   case 'downloading':
                                     return 'Downloading video...';
                                   case 'starting':
-                                    return 'Preparing download...';
+                                    return 'video is being downloaded... please wait... ';
                                   case 'completed':
                                     return 'Download completed!';
                                   case 'error':
