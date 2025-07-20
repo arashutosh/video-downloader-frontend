@@ -1,326 +1,378 @@
-import React, { useState, useEffect } from 'react';
-import {
-  Container,
-  TextField,
-  Button,
-  Typography,
-  Box,
-  Paper,
+import React, { useState, useRef, useEffect } from 'react';
+import axios from 'axios';
+import { 
+  Container, 
+  TextField, 
+  Button, 
+  Typography, 
+  Box, 
+  Card, 
+  CardContent, 
+  Grid, 
   CircularProgress,
   Alert,
-  List,
-  ListItem,
-  ListItemText,
-  ListItemSecondaryAction,
+  Chip,
   IconButton,
-  ThemeProvider,
-  createTheme,
+  Tooltip,
   AppBar,
   Toolbar,
+  Switch,
+  FormControlLabel
 } from '@mui/material';
-import { Download as DownloadIcon, Brightness4, Brightness7 } from '@mui/icons-material';
-import axios from 'axios';
+import { 
+  Download, 
+  CheckCircle, 
+  Error, 
+  ContentCopy,
+  Refresh,
+  DarkMode,
+  LightMode
+} from '@mui/icons-material';
+import { createTheme, ThemeProvider } from '@mui/material/styles';
 
-// Get backend URL from environment variable with fallback
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://13.201.22.207:5001';
+const API_BASE_URL = 'http://localhost:5001';
 
 function App() {
   const [url, setUrl] = useState('');
+  const [videoInfo, setVideoInfo] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [videoInfo, setVideoInfo] = useState(null);
-  const [darkMode, setDarkMode] = useState(() => {
-    const savedMode = localStorage.getItem('darkMode');
-    return savedMode ? JSON.parse(savedMode) : false;
-  });
-  const [downloadingIndex, setDownloadingIndex] = useState(null);
-  const [downloadStatus, setDownloadStatus] = useState('');
-  const [downloadSpeed, setDownloadSpeed] = useState(0);
-  const [eventSource, setEventSource] = useState(null);
-  const [slowDownloadReason, setSlowDownloadReason] = useState('');
-  const [downloadStartTime, setDownloadStartTime] = useState(null);
+  const [downloadProgress, setDownloadProgress] = useState({});
+  const [downloading, setDownloading] = useState(false);
+  // Initialize dark mode from localStorage immediately
+  const getInitialDarkMode = () => {
+    const savedDarkMode = localStorage.getItem('darkMode');
+    return savedDarkMode !== null ? JSON.parse(savedDarkMode) : false;
+  };
 
+  const [darkMode, setDarkMode] = useState(getInitialDarkMode);
+  const eventSourceRef = useRef(null);
+
+  // Save dark mode preference to localStorage whenever it changes
   useEffect(() => {
     localStorage.setItem('darkMode', JSON.stringify(darkMode));
   }, [darkMode]);
 
+  const handleDarkModeToggle = () => {
+    setDarkMode(!darkMode);
+  };
+
+  // Create theme based on dark mode state
   const theme = createTheme({
     palette: {
       mode: darkMode ? 'dark' : 'light',
+      primary: {
+        main: '#1976d2',
+      },
+      secondary: {
+        main: '#dc004e',
+      },
     },
   });
 
-  // Clean up event source on component unmount
-  useEffect(() => {
-    return () => {
-      if (eventSource) {
-        eventSource.close();
-      }
-    };
-  }, [eventSource]);
-
-  const startProgressStream = (downloadId) => {
-    // Close existing event source
-    if (eventSource) {
-      eventSource.close();
-    }
-
-    setDownloadStartTime(Date.now());
-    setSlowDownloadReason('');
-
-    const es = new EventSource(`${BACKEND_URL}/api/progress_stream/${downloadId}`);
-    
-    es.onmessage = (event) => {
-      try {
-        const progress = JSON.parse(event.data);
-        setDownloadStatus(progress.status || '');
-        setDownloadSpeed(progress.speed || 0);
-        
-        // Check for slow download
-        if (progress.status === 'downloading') {
-          const currentTime = Date.now();
-          const elapsedTime = (currentTime - downloadStartTime) / 1000; // in seconds
-          
-          if (elapsedTime > 30 && progress.speed < 1024 * 1024) { // 30 seconds and less than 1MB/s
-            if (progress.speed < 1024 * 50) { // Less than 50KB/s
-              setSlowDownloadReason('Very slow internet connection detected. This might take a while.');
-            } else if (progress.speed < 1024 * 200) { // Less than 200KB/s
-              setSlowDownloadReason('Slow internet connection detected. Please be patient.');
-            }
-          }
-        }
-        
-        if (progress.status === 'completed' || progress.status === 'finished') {
-          es.close();
-          setEventSource(null);
-          setSlowDownloadReason('');
-        } else if (progress.status === 'error') {
-          es.close();
-          setEventSource(null);
-          setSlowDownloadReason('');
-        }
-      } catch (error) {}
-    };
-
-    es.onerror = () => {
-      es.close();
-      setEventSource(null);
-      setSlowDownloadReason('');
-    };
-
-    setEventSource(es);
-  };
-
-  const formatSpeed = (speed) => {
-    if (!speed) return '';
-    if (speed < 1024) return `${speed.toFixed(0)} B/s`;
-    if (speed < 1024 * 1024) return `${(speed / 1024).toFixed(1)} KB/s`;
-    return `${(speed / (1024 * 1024)).toFixed(1)} MB/s`;
-  };
-
-  const handleSubmit = async (e) => {
+  const handleUrlSubmit = async (e) => {
     e.preventDefault();
+    if (!url.trim()) return;
+
     setLoading(true);
     setError('');
     setVideoInfo(null);
 
     try {
-      const response = await axios.post(`${BACKEND_URL}/api/download`, { url });
+      const response = await axios.post(`${API_BASE_URL}/api/download`, { url: url.trim() });
       setVideoInfo(response.data);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to process video');
+      setError(err.response?.data?.detail || 'Failed to fetch video information');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleMergeDownload = async (format, index) => {
-    setDownloadingIndex(index);
-    setDownloadStatus('starting');
-    setDownloadSpeed(0);
+  const handleDownload = async (format) => {
+    if (!videoInfo || downloading) return;
+
+    setDownloading(true);
+    setDownloadProgress({ status: 'starting', percent: 0 });
     
-    if (eventSource) {
-      eventSource.close();
-      setEventSource(null);
-    }
+    const newDownloadId = `${videoInfo.video_id}_${format.format_id}_${Date.now()}`;
 
     try {
-      const downloadId = Date.now().toString() + Math.random().toString(36).substr(2, 9);
-      startProgressStream(downloadId);
-      const response = await axios.get(
-        `${BACKEND_URL}/api/merge_download`,
-        {
-          params: { 
-            url, 
-            format_id: format.format_id,
-            download_id: downloadId
-          },
-          responseType: 'blob',
-          timeout: 3600000,
+      // Start progress monitoring
+      startProgressMonitoring(newDownloadId);
+
+      // Start download
+      const downloadUrl = `${API_BASE_URL}/api/merge_download?url=${encodeURIComponent(url)}&format_id=${format.format_id}&download_id=${newDownloadId}`;
+      
+      const response = await axios.get(downloadUrl, {
+        responseType: 'blob',
+        onDownloadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percent = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            setDownloadProgress({ status: 'downloading', percent });
+          }
         }
-      );
-      if (eventSource) {
-        eventSource.close();
-        setEventSource(null);
-      }
+      });
+
+      // Create download link
       const blob = new Blob([response.data], { type: 'video/mp4' });
-      const downloadUrl = window.URL.createObjectURL(blob);
+      const downloadUrl2 = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = `${videoInfo.title}_${format.quality || format.resolution}.mp4`;
+      link.href = downloadUrl2;
+      link.download = `${videoInfo.title || 'video'}.mp4`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      window.URL.revokeObjectURL(downloadUrl);
-      setDownloadStatus('completed');
+      window.URL.revokeObjectURL(downloadUrl2);
+
+      setDownloadProgress({ status: 'completed', percent: 100 });
     } catch (err) {
-      alert('Failed to download video: ' + (err.response?.data?.detail || err.message));
-      if (eventSource) {
-        eventSource.close();
-        setEventSource(null);
-      }
-      setDownloadStatus('error');
+      setDownloadProgress({ 
+        status: 'error', 
+        percent: 0, 
+        error: err.response?.data?.detail || 'Download failed' 
+      });
     } finally {
-      setTimeout(() => {
-        setDownloadingIndex(null);
-        setDownloadStatus('');
-        setDownloadSpeed(0);
-      }, 3000);
+      setDownloading(false);
+      stopProgressMonitoring();
+    }
+  };
+
+  const startProgressMonitoring = (id) => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
+    const eventSource = new EventSource(`${API_BASE_URL}/api/progress_stream/${id}`);
+    eventSourceRef.current = eventSource;
+
+    eventSource.onmessage = (event) => {
+      try {
+        const progress = JSON.parse(event.data);
+        setDownloadProgress(progress);
+        
+        if (progress.status === 'completed' || progress.status === 'error') {
+          eventSource.close();
+        }
+      } catch (err) {
+        console.error('Error parsing progress:', err);
+      }
+    };
+
+    eventSource.onerror = () => {
+      eventSource.close();
+    };
+  };
+
+  const stopProgressMonitoring = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      stopProgressMonitoring();
+    };
+  }, []);
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+  };
+
+  const getStatusIcon = (status) => {
+    switch (status) {
+      case 'completed':
+        return <CheckCircle color="success" />;
+      case 'error':
+        return <Error color="error" />;
+      case 'downloading':
+      case 'merging':
+        return <CircularProgress size={20} />;
+      default:
+        return <Download />;
+    }
+  };
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'completed':
+        return 'success';
+      case 'error':
+        return 'error';
+      case 'downloading':
+      case 'merging':
+        return 'primary';
+      default:
+        return 'default';
     }
   };
 
   return (
     <ThemeProvider theme={theme}>
-      <Box sx={{ flexGrow: 1, bgcolor: 'background.default', minHeight: '100vh' }}>
-        <AppBar position="static" color="primary" enableColorOnDark>
+      <Box sx={{ 
+        minHeight: '100vh', 
+        bgcolor: 'background.default',
+        color: 'text.primary'
+      }}>
+        <AppBar position="static" elevation={0}>
           <Toolbar>
             <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
               Video Downloader
             </Typography>
-            <IconButton color="inherit" onClick={() => setDarkMode(!darkMode)}>
-              {darkMode ? <Brightness7 /> : <Brightness4 />}
-            </IconButton>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={darkMode}
+                  onChange={handleDarkModeToggle}
+                  icon={<LightMode />}
+                  checkedIcon={<DarkMode />}
+                />
+              }
+              label={darkMode ? "Dark Mode" : "Light Mode"}
+              sx={{ color: 'inherit' }}
+            />
           </Toolbar>
         </AppBar>
-        <Container maxWidth="md">
-          <Box sx={{ my: 4 }}>
-            <Paper elevation={3} sx={{ p: 3, mb: 3 }}>
-              <form onSubmit={handleSubmit}>
+
+        <Container maxWidth="lg" sx={{ py: 4 }}>
+          <Box component="form" onSubmit={handleUrlSubmit} sx={{ mb: 4 }}>
+            <Grid container spacing={2}>
+              <Grid item xs={12} md={10}>
                 <TextField
                   fullWidth
-                  label="Enter Video URL"
-                  variant="outlined"
+                  label="Enter YouTube URL"
                   value={url}
                   onChange={(e) => setUrl(e.target.value)}
-                  margin="normal"
                   placeholder="https://www.youtube.com/watch?v=..."
+                  disabled={loading}
                 />
+              </Grid>
+              <Grid item xs={12} md={2}>
                 <Button
                   fullWidth
-                  variant="contained"
-                  color="primary"
                   type="submit"
-                  disabled={loading}
-                  sx={{ mt: 2 }}
+                  variant="contained"
+                  size="large"
+                  disabled={loading || !url.trim()}
+                  startIcon={loading ? <CircularProgress size={20} /> : <Refresh />}
                 >
-                  {loading ? <CircularProgress size={24} /> : 'Get Video Info'}
+                  {loading ? 'Loading...' : 'Get Formats'}
                 </Button>
-              </form>
-            </Paper>
+              </Grid>
+            </Grid>
+          </Box>
 
-            {error && (
-              <Alert severity="error" sx={{ mb: 2 }}>
-                {error}
-              </Alert>
-            )}
+          {error && (
+            <Alert severity="error" sx={{ mb: 3 }}>
+              {error}
+            </Alert>
+          )}
 
-            {videoInfo && (
-              <Paper elevation={3} sx={{ p: 3 }}>
-                <Typography variant="h6" gutterBottom>
+          {videoInfo && (
+            <Card sx={{ mb: 3 }}>
+              <CardContent>
+                <Typography variant="h5" gutterBottom>
                   {videoInfo.title}
                 </Typography>
-                <List>
-                  {(() => {
-                    const seen = new Set();
-                    return videoInfo.formats.filter(f => f.filesize && f.filesize > 0 && !seen.has(f.quality) && seen.add(f.quality));
-                  })().map((format, index) => (
-                    <ListItem key={index} sx={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-                      <Box sx={{ width: '100%' }}>
-                        <ListItemText
-                          primary={`${format.quality} (${format.resolution})`}
-                          secondary={
-                            <>
-                              <Typography component="span" variant="body2" color="text.primary">
-                                {format.mimeType.toUpperCase()}
-                              </Typography>
-                              {format.hasAudio ? " • With Audio" : " • Video Only"}
-                              {format.filesize ? ` • ${(format.filesize / (1024 * 1024)).toFixed(2)} MB` : ""}
-                            </>
-                          }
-                        />
-                        {downloadingIndex === index && (
-                          <Box sx={{ width: '100%', mt: 2 }}>
-                            <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                              {(() => {
-                                switch(downloadStatus) {
-                                  case 'merging':
-                                    return 'Merging audio and video streams...';
-                                  case 'downloading':
-                                    return 'Downloading video...';
-                                  case 'starting':
-                                    return 'video is being downloaded... please wait... ';
-                                  case 'completed':
-                                    return 'Download completed!';
-                                  case 'error':
-                                    return 'An error occurred during download';
-                                  default:
-                                    return 'Please wait...';
-                                }
-                              })()}
-                            </Typography>
-                            {downloadStatus === 'downloading' && downloadSpeed > 0 && (
-                              <>
-                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                                  Download speed: {formatSpeed(downloadSpeed)}
-                                </Typography>
-                                {slowDownloadReason && (
-                                  <Typography 
-                                    variant="caption" 
-                                    color="warning.main" 
-                                    sx={{ 
-                                      display: 'block',
-                                      mt: 1,
-                                      fontStyle: 'italic'
-                                    }}
-                                  >
-                                    {slowDownloadReason}
-                                  </Typography>
-                                )}
-                              </>
-                            )}
-                          </Box>
+                
+                <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  {videoInfo.formats
+                    .filter(format => format.resolution !== 'unknown')
+                    .map((format, index) => (
+                    <Card variant="outlined" key={index}>
+                      <CardContent>
+                        <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
+                          <Typography variant="h6" component="div">
+                            {format.quality}
+                          </Typography>
+                          <Chip 
+                            label={format.resolution} 
+                            size="small" 
+                            color="primary" 
+                            variant="outlined"
+                          />
+                        </Box>
+                        
+                        <Typography variant="body2" color="text.secondary" gutterBottom>
+                          {format.mimeType.toUpperCase()} • {format.hasAudio ? 'With Audio' : 'Video Only'}
+                        </Typography>
+                        
+                        {format.filesize > 0 && (
+                          <Typography variant="body2" color="text.secondary" gutterBottom>
+                            Size: {(format.filesize / (1024 * 1024)).toFixed(1)} MB
+                          </Typography>
                         )}
-                      </Box>
-                      <ListItemSecondaryAction>
-                        <IconButton
-                          edge="end"
-                          onClick={() => handleMergeDownload(format, index)}
-                          title="Download"
-                          disabled={downloadingIndex === index}
-                        >
-                          {downloadingIndex === index ? <CircularProgress size={24} /> : <DownloadIcon />}
-                        </IconButton>
-                      </ListItemSecondaryAction>
-                    </ListItem>
+
+                        <Box display="flex" gap={1} mt={2}>
+                          <Button
+                            variant="contained"
+                            size="small"
+                            startIcon={<Download />}
+                            onClick={() => handleDownload(format)}
+                            disabled={downloading}
+                            fullWidth
+                          >
+                            Download
+                          </Button>
+                        </Box>
+                      </CardContent>
+                    </Card>
                   ))}
-                </List>
-              </Paper>
-            )}
-          </Box>
+                </Box>
+              </CardContent>
+            </Card>
+          )}
+
+          {downloadProgress.status && (
+            <Card>
+              <CardContent>
+                <Box display="flex" alignItems="center" gap={2} mb={2}>
+                  {getStatusIcon(downloadProgress.status)}
+                  <Typography variant="h6">
+                    Download Progress
+                  </Typography>
+                </Box>
+                
+                <Box display="flex" alignItems="center" gap={2}>
+                  <Box flex={1}>
+                    <LinearProgress 
+                      variant="determinate" 
+                      value={downloadProgress.percent} 
+                      color={getStatusColor(downloadProgress.status)}
+                    />
+                  </Box>
+                  <Typography variant="body2">
+                    {downloadProgress.percent}%
+                  </Typography>
+                </Box>
+                
+                <Typography variant="body2" color="text.secondary" mt={1}>
+                  Status: {downloadProgress.status}
+                  {downloadProgress.error && ` - ${downloadProgress.error}`}
+                </Typography>
+              </CardContent>
+            </Card>
+          )}
         </Container>
       </Box>
     </ThemeProvider>
   );
 }
+
+// LinearProgress component for the progress bar
+const LinearProgress = ({ variant, value, color }) => (
+  <Box sx={{ width: '100%', bgcolor: 'grey.200', borderRadius: 1, overflow: 'hidden' }}>
+    <Box
+      sx={{
+        width: `${value}%`,
+        height: 8,
+        bgcolor: color === 'success' ? 'success.main' : 
+                color === 'error' ? 'error.main' : 'primary.main',
+        transition: 'width 0.3s ease'
+      }}
+    />
+  </Box>
+);
 
 export default App;
